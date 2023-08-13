@@ -43,13 +43,13 @@ class Model(nn.Module):
                 multimask_output=False,
             )
 
-            masks = F.interpolate(
-                low_res_masks,
-                (H, W),
-                mode="bilinear",
-                align_corners=False,
-            )
-            pred_masks.append(masks.squeeze(1))
+            # masks = F.interpolate(
+            #     low_res_masks,
+            #     (H, W),
+            #     mode="bilinear",
+            #     align_corners=False,
+            # )
+            pred_masks.append(low_res_masks.squeeze(1))
             ious.append(iou_predictions)
 
         return pred_masks, ious
