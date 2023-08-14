@@ -91,6 +91,10 @@ def train_sam(
 
             data_time.update(time.time() - end)
             images, bboxes, gt_masks = data['img'], data['bboxes'], data['masks']
+            if not len(bboxes) or bboxes[0].nelement() == 0:
+                continue
+            if not len(gt_masks) or gt_masks[0].nelement() == 0:
+                continue
             batch_size = images.size(0)
             pred_masks, iou_predictions = model(images, bboxes)
             num_masks = sum(len(pred_mask) for pred_mask in pred_masks)
@@ -164,6 +168,7 @@ def main(cfg: Box) -> None:
     fabric = L.Fabric(accelerator="auto",
                       devices=cfg.num_devices,
                       strategy="auto",
+                      precision="16-mixed",
                       )
     fabric.launch()
     fabric.seed_everything(1337 + fabric.global_rank)

@@ -22,6 +22,7 @@ config = {
             "prompt_encoder": False,
             "mask_decoder": False,
         },
+        "chunk_size": 16,
     },
     "dataset": "/home/ilia_kiselev/hubmap_organ_yolo_folds_3_cls/dataset.yaml",
     "yolo_cfg": "/home/ilia_kiselev/lightning-sam/lightning_sam/yolo.yaml"
