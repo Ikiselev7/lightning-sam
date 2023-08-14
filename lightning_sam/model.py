@@ -1,4 +1,3 @@
-import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from segment_anything import sam_model_registry
@@ -29,39 +28,29 @@ class Model(nn.Module):
         image_embeddings = self.model.image_encoder(images)
         pred_masks = []
         ious = []
-        for embedding, im_bbox in zip(image_embeddings, bboxes):
-            if self.cfg.model.chunk_size and im_bbox.size(0) > self.cfg.model.chunk_size:
-                chunk_size = self.cfg.model.chunk_size
-            else:
-                chunk_size = im_bbox.size(0)
-            bbox_chunks = torch.split(im_bbox, im_bbox.size(0) // chunk_size, dim=0)
-            chunks_masks = []
-            chunks_ious = []
-            for bbox in bbox_chunks:
-                sparse_embeddings, dense_embeddings = self.model.prompt_encoder(
-                    points=None,
-                    boxes=bbox,
-                    masks=None,
-                )
+        for embedding, bbox in zip(image_embeddings, bboxes):
+            sparse_embeddings, dense_embeddings = self.model.prompt_encoder(
+                points=None,
+                boxes=bbox,
+                masks=None,
+            )
 
-                low_res_masks, iou_predictions = self.model.mask_decoder(
-                    image_embeddings=embedding.unsqueeze(0),
-                    image_pe=self.model.prompt_encoder.get_dense_pe(),
-                    sparse_prompt_embeddings=sparse_embeddings,
-                    dense_prompt_embeddings=dense_embeddings,
-                    multimask_output=False,
-                )
+            low_res_masks, iou_predictions = self.model.mask_decoder(
+                image_embeddings=embedding.unsqueeze(0),
+                image_pe=self.model.prompt_encoder.get_dense_pe(),
+                sparse_prompt_embeddings=sparse_embeddings,
+                dense_prompt_embeddings=dense_embeddings,
+                multimask_output=False,
+            )
 
-                # masks = F.interpolate(
-                #     low_res_masks,
-                #     (H, W),
-                #     mode="bilinear",
-                #     align_corners=False,
-                # )
-                chunks_masks.append(low_res_masks.squeeze(1))
-                chunks_ious.append(iou_predictions)
-            pred_masks.append(torch.cat(chunks_masks, dim=0))
-            ious.append(torch.cat(chunks_ious, dim=0))
+            # masks = F.interpolate(
+            #     low_res_masks,
+            #     (H, W),
+            #     mode="bilinear",
+            #     align_corners=False,
+            # )
+            pred_masks.append(low_res_masks.squeeze(1))
+            ious.append(iou_predictions)
 
         return pred_masks, ious
 

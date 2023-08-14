@@ -2,6 +2,7 @@ import os
 import time
 
 import lightning as L
+from lightning.fabric.strategies.fsdp import FSDPStrategy, fsdp_overlap_step_with_backward
 import segmentation_models_pytorch as smp
 import torch
 import torch.nn.functional as F
@@ -31,6 +32,10 @@ def validate(fabric: L.Fabric, model: Model, val_dataloader: DataLoader, epoch: 
     with torch.no_grad():
         for iter, data in tqdm(enumerate(val_dataloader)):
             images, bboxes, gt_masks = data['img'], data['bboxes'], data['masks']
+            if not len(bboxes) or bboxes[0].nelement() == 0:
+                continue
+            if not len(gt_masks) or gt_masks[0].nelement() == 0:
+                continue
             num_images = images.size(0)
             pred_masks, _ = model(images, bboxes)
             for pred_mask, gt_mask in zip(pred_masks, gt_masks):
@@ -58,13 +63,13 @@ def validate(fabric: L.Fabric, model: Model, val_dataloader: DataLoader, epoch: 
 
 
 def train_sam(
-    cfg: Box,
-    fabric: L.Fabric,
-    model: Model,
-    optimizer: _FabricOptimizer,
-    scheduler: _FabricOptimizer,
-    train_dataloader: DataLoader,
-    val_dataloader: DataLoader,
+        cfg: Box,
+        fabric: L.Fabric,
+        model: Model,
+        optimizer: _FabricOptimizer,
+        scheduler: _FabricOptimizer,
+        train_dataloader: DataLoader,
+        val_dataloader: DataLoader,
 ):
     """The SAM training loop."""
 
@@ -108,10 +113,9 @@ def train_sam(
                 loss_iou += F.mse_loss(iou_prediction, batch_iou, reduction='sum') / num_masks
 
             loss_total = 20. * loss_focal + loss_dice + loss_iou
-            optimizer.zero_grad()
-            fabric.backward(loss_total)
-            optimizer.step()
-            scheduler.step()
+            with fsdp_overlap_step_with_backward(optimizer, model):
+                loss_total.backward()
+
             batch_time.update(time.time() - end)
             end = time.time()
 
@@ -146,8 +150,8 @@ def train_sam(
             )
 
 
-def configure_opt(cfg: Box, model: Model):
 
+def configure_opt(cfg: Box, model: Model):
     def lr_lambda(step):
         if step < cfg.opt.warmup_steps:
             return step / cfg.opt.warmup_steps
@@ -158,16 +162,27 @@ def configure_opt(cfg: Box, model: Model):
         else:
             return 1 / (cfg.opt.decay_factor**2)
 
-    optimizer = torch.optim.Adam(model.model.parameters(), lr=cfg.opt.learning_rate, weight_decay=cfg.opt.weight_decay)
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+    optimizers = []
+    for param in model.model.parameters():
+        optimizer = torch.optim.Adam([param], lr=cfg.opt.learning_rate, weight_decay=cfg.opt.weight_decay, foreach=False)
+        optimizers.append(optimizer)
 
-    return optimizer, scheduler
+    # Assuming the step count will be consistent across all optimizers, use the first optimizer to create the scheduler.
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizers[0], lr_lambda)
+
+    # Manually set other optimizer's learning rate using the first optimizer's learning rate.
+    for optimizer in optimizers[1:]:
+        for group, first_group in zip(optimizer.param_groups, optimizers[0].param_groups):
+            group['lr'] = first_group['lr']
+
+    return optimizers, scheduler
 
 
 def main(cfg: Box) -> None:
+    strategy = FSDPStrategy()
     fabric = L.Fabric(accelerator="auto",
                       devices=cfg.num_devices,
-                      strategy="auto",
+                      strategy=strategy,
                       precision="16-mixed",
                       )
     fabric.launch()
@@ -189,7 +204,7 @@ def main(cfg: Box) -> None:
     val_data = fabric._setup_dataloader(val_data)
 
     optimizer, scheduler = configure_opt(cfg, model)
-    model, optimizer = fabric.setup(model, optimizer)
+    model, *optimizer = fabric.setup(model, *optimizer)
 
     train_sam(cfg, fabric, model, optimizer, scheduler, train_data, val_data)
     validate(fabric, model, val_data, epoch=0)
