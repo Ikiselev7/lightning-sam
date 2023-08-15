@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from box import Box
 from tqdm import tqdm
 from ultralytics.utils import IterableSimpleNamespace, yaml_load
+import segment_anything
 
 from config_yolo_set import cfg
 from dataset import load_datasets, load_yolo_datasets
@@ -100,6 +101,14 @@ def train_sam(
                 continue
             if not len(gt_masks) or gt_masks[0].nelement() == 0:
                 continue
+            boxes, masks = [], []
+            for box, msk in zip(bboxes, gt_masks):
+                random_indices = torch.randperm(box.size(0))[:cfg.model.chunk_size]
+                # Use the random indices to slice both tensors
+                boxes.append(box[random_indices])
+                masks.append(msk[random_indices])
+            bboxes = boxes
+            gt_masks = masks
             batch_size = images.size(0)
             pred_masks, iou_predictions = model(images, bboxes)
             num_masks = sum(len(pred_mask) for pred_mask in pred_masks)
@@ -113,6 +122,7 @@ def train_sam(
                 loss_iou += F.mse_loss(iou_prediction, batch_iou, reduction='sum') / num_masks
 
             loss_total = 20. * loss_focal + loss_dice + loss_iou
+            # print(loss_total, loss_focal, loss_dice, loss_iou)
             with fsdp_overlap_step_with_backward(optimizer, model):
                 loss_total.backward()
 
@@ -179,11 +189,12 @@ def configure_opt(cfg: Box, model: Model):
 
 
 def main(cfg: Box) -> None:
-    strategy = FSDPStrategy()
+    policy = {Model}
+    strategy = FSDPStrategy(cpu_offload=True, auto_wrap_policy=policy)
     fabric = L.Fabric(accelerator="auto",
                       devices=cfg.num_devices,
                       strategy=strategy,
-                      precision="16-mixed",
+                      # precision="16-mixed",
                       )
     fabric.launch()
     fabric.seed_everything(1337 + fabric.global_rank)
